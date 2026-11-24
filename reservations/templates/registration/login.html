@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Log in · GovFleet{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Log in</h1>
+  {% if form.errors %}
+    <p class="alert error">Invalid username or password.</p>
+  {% endif %}
+  <form method="post">
+    {% csrf_token %}
+    <label for="id_username">Username</label>
+    <input id="id_username" name="username" type="text" autocomplete="username" required autofocus>
+    <label for="id_password">Password</label>
+    <input id="id_password" name="password" type="password" autocomplete="current-password" required>
+    <input type="hidden" name="next" value="{{ next }}">
+    <button type="submit" class="primary">Log in</button>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Reserve a Vehicle · GovFleet{% endblock %}
+
+{% block content %}
+<div class="layout"
+     id="app"
+     data-vehicles-url="{% url 'api:vehicle-list' %}"
+     data-events-url="{% url 'api:calendar-events' %}"
+     data-reservations-url="{% url 'api:reservation-create' %}"
+     data-availability-url-template="{% url 'api:vehicle-availability' 0 %}"
+     data-login-url="{% url 'login' %}">
+
+  <aside class="card">
+    <h1>Vehicle Reservation Request</h1>
+    <p class="hint">Drag across the calendar to pick a time slot, or enter it below.</p>
+
+    <form id="reservation-form" novalidate>
+      <label for="vehicle">Vehicle</label>
+      <select id="vehicle" name="vehicle" required>
+        <option value="">Select a vehicle…</option>
+      </select>
+      <p class="field-error" data-error-for="vehicle"></p>
+
+      <label for="start_time">Start</label>
+      <input id="start_time" name="start_time" type="datetime-local" required>
+      <p class="field-error" data-error-for="start_time"></p>
+
+      <label for="end_time">End</label>
+      <input id="end_time" name="end_time" type="datetime-local" required>
+      <p class="field-error" data-error-for="end_time"></p>
+
+      <label for="purpose">Purpose of trip</label>
+      <textarea id="purpose" name="purpose" rows="3" maxlength="500" required></textarea>
+      <p class="field-error" data-error-for="purpose"></p>
+
+      <div class="actions">
+        <button type="button" id="check-availability">Check availability</button>
+        <button type="submit" class="primary">Submit request</button>
+      </div>
+    </form>
+
+    <div id="result" class="alert" role="status" aria-live="polite" hidden></div>
+  </aside>
+
+  <section class="card calendar-card">
+    <div class="calendar-toolbar">
+      <label for="vehicle-filter">Show reservations for</label>
+      <select id="vehicle-filter">
+        <option value="">All vehicles</option>
+      </select>
+    </div>
+    <div id="calendar"></div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+<script src="{% static 'reservations/calendar.js' %}"></script>
+{% endblock %}
