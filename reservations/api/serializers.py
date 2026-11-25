@@ -1,5 +1,6 @@
 """Input parsing / output shaping only. Business rules live in services/."""
 
+from django.utils import timezone
 from rest_framework import serializers
 
 from ..models import Reservation, Vehicle
@@ -62,8 +63,10 @@ def to_calendar_event(reservation, viewer):
     event = {
         "id": reservation.pk,
         "title": f"{reservation.vehicle.plate_number} — {'My reservation' if is_own else 'Reserved'}",
-        "start": reservation.start_time.isoformat(),
-        "end": reservation.end_time.isoformat(),
+        # Local time (Asia/Manila, +08:00), consistent with DRF's DateTimeField
+        # output on the other endpoints.
+        "start": timezone.localtime(reservation.start_time).isoformat(),
+        "end": timezone.localtime(reservation.end_time).isoformat(),
         "classNames": [f"status-{reservation.status.lower()}"] + (["own"] if is_own else []),
         "extendedProps": {
             "vehicleId": reservation.vehicle_id,

@@ -1,0 +1,2 @@
+# Vendored third-party files are kept byte-for-byte (checksums in their README).
+reservations/static/reservations/vendor/** -text

@@ -9,7 +9,8 @@
      data-events-url="{% url 'api:calendar-events' %}"
      data-reservations-url="{% url 'api:reservation-create' %}"
      data-availability-url-template="{% url 'api:vehicle-availability' 0 %}"
-     data-login-url="{% url 'login' %}">
+     data-login-url="{% url 'login' %}"
+     data-max-advance-seconds="{{ max_advance_seconds }}">
 
   <aside class="card">
     <h1>Vehicle Reservation Request</h1>
@@ -56,6 +57,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+{# Vendored locally (no CDN dependency); see vendor/fullcalendar-6.1.15/README.md. #}
+<script src="{% static 'reservations/vendor/fullcalendar-6.1.15/index.global.min.js' %}"></script>
 <script src="{% static 'reservations/calendar.js' %}"></script>
 {% endblock %}

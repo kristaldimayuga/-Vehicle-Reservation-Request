@@ -12,6 +12,18 @@
     availability: (id) => app.dataset.availabilityUrlTemplate.replace("/0/", `/${encodeURIComponent(id)}/`),
     login: app.dataset.loginUrl,
   };
+  // Server booking horizon (VehicleReservationService.MAX_ADVANCE).
+  const maxAdvanceMs = Number(app.dataset.maxAdvanceSeconds) * 1000;
+
+  const MESSAGES = {
+    unavailable: "GovFleet is temporarily unavailable. Please try again in a moment.",
+    network: "Network error. Please check your connection and try again.",
+    throttled: "You have sent too many reservation requests. Please wait a while before trying again.",
+  };
+
+  // Error whose message is safe and meant to be shown to the user.
+  class UserFacingError extends Error {}
+  class NotAuthenticatedError extends Error {}
 
   const form = document.getElementById("reservation-form");
   const vehicleSelect = document.getElementById("vehicle");
@@ -31,22 +43,36 @@
   }
 
   async function api(url, options = {}) {
-    const response = await fetch(url, {
-      credentials: "same-origin",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "X-CSRFToken": getCookie("csrftoken"),
-      },
-      ...options,
-    });
+    let response;
+    try {
+      response = await fetch(url, {
+        credentials: "same-origin",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCookie("csrftoken"),
+        },
+        ...options,
+      });
+    } catch (_) {
+      throw new UserFacingError(MESSAGES.network);
+    }
     if (response.status === 401) {
       window.location.href = `${urls.login}?next=${encodeURIComponent(window.location.pathname)}`;
-      throw new Error("Not authenticated");
+      throw new NotAuthenticatedError("Not authenticated");
+    }
+    if (response.status === 503) {
+      throw new UserFacingError(MESSAGES.unavailable);
     }
     let body = null;
     try { body = await response.json(); } catch (_) { /* empty body */ }
     return { status: response.status, body };
+  }
+
+  // Show a failed request's error (nothing for a login redirect).
+  function showRequestError(err) {
+    if (err instanceof NotAuthenticatedError) return;
+    showResult("error", err instanceof UserFacingError ? err.message : "Something went wrong. Please try again later.");
   }
 
   // datetime-local value ("2026-11-25T08:00") -> ISO string with timezone.
@@ -126,7 +152,13 @@
   // --- vehicles -------------------------------------------------------------
 
   async function loadVehicles() {
-    const { status, body } = await api(urls.vehicles);
+    let status, body;
+    try {
+      ({ status, body } = await api(urls.vehicles));
+    } catch (err) {
+      showRequestError(err);
+      return;
+    }
     if (status !== 200 || !Array.isArray(body)) {
       showResult("error", "Could not load vehicles. Please refresh the page.");
       return;
@@ -152,12 +184,11 @@
     selectOverlap: true,
     allDaySlot: false,
     height: "auto",
-    // Mirrors the server rule: bookings at most ~6 months (183 days) ahead.
+    // Mirrors the server rule exactly: a booking may start at most
+    // MAX_ADVANCE from now. The limit comes from the server (data attribute).
     validRange: () => {
       const today = new Date(new Date().setHours(0, 0, 0, 0));
-      const limit = new Date(today);
-      limit.setDate(limit.getDate() + 184);
-      return { start: today, end: limit };
+      return { start: today, end: new Date(Date.now() + maxAdvanceMs) };
     },
     events: async (info, success, failure) => {
       const params = new URLSearchParams({ start: info.start.toISOString(), end: info.end.toISOString() });
@@ -170,7 +201,10 @@
         failure(err);
       }
     },
-    eventSourceFailure: () => showResult("error", "Could not load reservations for this period."),
+    eventSourceFailure: (err) => {
+      if (err instanceof UserFacingError) showRequestError(err);
+      else if (!(err instanceof NotAuthenticatedError)) showResult("error", "Could not load reservations for this period.");
+    },
     select: (info) => {
       clearErrors();
       startInput.value = dateToLocalInput(info.start);
@@ -213,7 +247,7 @@
         showResult("error", (body && body.detail) || "Could not check availability.");
       }
     } catch (err) {
-      if (err.message !== "Not authenticated") showResult("error", "Network error. Please try again.");
+      showRequestError(err);
     } finally {
       setBusy(false);
     }
@@ -253,11 +287,13 @@
         showFieldErrors(body);
       } else if (status === 403) {
         showResult("error", "You do not have permission to make reservations.");
+      } else if (status === 429) {
+        showResult("error", MESSAGES.throttled);
       } else {
         showResult("error", "Something went wrong. Please try again later.");
       }
     } catch (err) {
-      if (err.message !== "Not authenticated") showResult("error", "Network error. Please try again.");
+      showRequestError(err);
     } finally {
       setBusy(false);
     }

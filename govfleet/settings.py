@@ -15,8 +15,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 env = environ.Env(
     DJANGO_DEBUG=(bool, False),
     DJANGO_ALLOWED_HOSTS=(list, []),
-    DB_HOST=(str, "localhost"),
+    # 127.0.0.1, not "localhost": on Windows "localhost" resolves to ::1
+    # first, so every failed connection is attempted (and times out) twice.
+    DB_HOST=(str, "127.0.0.1"),
     DB_PORT=(int, 5432),
+    DB_CONNECT_TIMEOUT=(int, 5),
+    THROTTLE_RESERVATION_CREATE=(str, "30/hour"),
 )
 environ.Env.read_env(BASE_DIR / ".env")
 
@@ -37,6 +41,7 @@ if not DEBUG:
     SECURE_SSL_REDIRECT = True
     SECURE_HSTS_SECONDS = 60 * 60 * 24 * 30
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
 
 # --- Applications ------------------------------------------------------------
 
@@ -60,6 +65,8 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # Last, so its process_exception runs first: DB outage -> clean 503.
+    "govfleet.middleware.DatabaseUnavailableMiddleware",
 ]
 
 ROOT_URLCONF = "govfleet.urls"
@@ -92,6 +99,12 @@ DATABASES = {
         "HOST": env("DB_HOST"),
         "PORT": env("DB_PORT"),
         "CONN_MAX_AGE": 60,
+        # Drop a stale persistent connection instead of failing the request.
+        "CONN_HEALTH_CHECKS": True,
+        "OPTIONS": {
+            # Fail fast when PostgreSQL is down instead of hanging the request.
+            "connect_timeout": env("DB_CONNECT_TIMEOUT"),
+        },
     }
 }
 
@@ -122,6 +135,28 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
+    "EXCEPTION_HANDLER": "reservations.api.exceptions.api_exception_handler",
+    # Applied per view via ScopedRateThrottle (see ReservationCreateView).
+    # Counters live in the default cache (per process); move to Redis later.
+    "DEFAULT_THROTTLE_RATES": {
+        "reservation_create": env("THROTTLE_RESERVATION_CREATE"),
+    },
+}
+
+# --- Logging -----------------------------------------------------------------
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "standard": {"format": "{asctime} {levelname} {name}: {message}", "style": "{"},
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "formatter": "standard"},
+    },
+    "loggers": {
+        "govfleet": {"handlers": ["console"], "level": "INFO", "propagate": False},
+    },
 }
 
 # --- Internationalization ----------------------------------------------------

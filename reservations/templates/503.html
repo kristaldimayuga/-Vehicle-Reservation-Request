@@ -1,0 +1,22 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Service unavailable · GovFleet</title>
+  <link rel="stylesheet" href="{% static 'reservations/govfleet.css' %}">
+</head>
+<body>
+  {# Standalone: must not touch the database (no user/session lookups). #}
+  <header class="topbar">
+    <a class="brand" href="/">GovFleet</a>
+  </header>
+  <main class="container">
+    <section class="card narrow">
+      <h1>Service temporarily unavailable</h1>
+      <p>GovFleet cannot reach its database right now. Your data is safe.</p>
+      <p>Please wait a moment and <a href="">try again</a>. If the problem continues, contact the system administrator.</p>
+    </section>
+  </main>
+</body>
+</html>

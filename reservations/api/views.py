@@ -1,10 +1,12 @@
 """HTTP layer: parse/validate input, call the service, shape the response.
 
-Status codes: 400 invalid input, 401 not authenticated, 409 slot conflict.
+Status codes: 400 invalid input, 401 not authenticated, 409 slot conflict,
+429 rate limited, 503 database unavailable (see api/exceptions.py).
 """
 
 from rest_framework import generics, status
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from ..models import Vehicle
@@ -74,7 +76,13 @@ class VehicleAvailabilityView(APIView):
 
 
 class ReservationCreateView(APIView):
-    """POST /api/reservations/ — submit a reservation request (F-01)."""
+    """POST /api/reservations/ — submit a reservation request (F-01).
+
+    Rate-limited per user (429 Too Many Requests) to stop request flooding.
+    """
+
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "reservation_create"
 
     def post(self, request):
         payload = ReservationCreateSerializer(data=request.data)
