@@ -66,8 +66,10 @@ jobs:
       - name: Deployment checks (DEBUG off)
         env:
           DJANGO_DEBUG: "False"
-          DJANGO_SECRET_KEY: ci-${{ github.run_id }}-${{ github.run_attempt }}-x7Qp2Lm9Vz4Rt8Kd3Hs6Wn1Yb5Fg0Jc
-        run: python manage.py check --deploy --fail-level WARNING
+        # Fresh random key per run: long and random enough for security.W009.
+        run: |
+          export DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')"
+          python manage.py check --deploy --fail-level WARNING
 
       - name: Run tests
         run: python -m pytest
