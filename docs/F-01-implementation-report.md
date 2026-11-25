@@ -5,9 +5,11 @@
 | **Project** | GovFleet — Government Vehicle Reservation and Fleet Management System |
 | **Course** | CS 413 Advanced Software Engineering · Group 7 |
 | **Feature** | F-01 — Vehicle Reservation Request |
-| **Status** | Implemented; 43/43 automated tests passing |
-| **Date** | November 24, 2026 |
-| **Branch** | `feature/f01-vehicle-reservation` |
+| **Status** | Implemented; 59/59 automated tests passing |
+| **Date** | November 24, 2026 (revised November 25, 2026) |
+| **Branch** | `feature/f01-vehicle-reservation`, polished in `fix/f01-polish` |
+
+> **Revision (Nov 25, 2026):** After Lab Activity 3 (test case TC-05, database outage, failed), F-01 was hardened: database outages now return a clean `503` in about 2 s instead of a 41 s hang and the debug page, there is a `/health/` endpoint, reservation creation is rate-limited, the calendar feed uses local time, the calendar's booking horizon comes from the server, FullCalendar is served locally, and CI runs on GitHub Actions. See [LA3-summary.md](LA3-summary.md) and §15.
 
 ---
 
@@ -103,7 +105,10 @@ This separation matches the Worksheet B responsibility matrix (`VehicleReservati
 | Serializers | `reservations/api/serializers.py` | Custom (on DRF) | Input parsing, output shaping, privacy filtering |
 | `SessionAuthentication401` | `reservations/api/authentication.py` | Adapted | Makes unauthenticated API calls return 401 instead of DRF's default 403 |
 | Calendar page | `templates/reservations/calendar.html`, `static/reservations/calendar.js` | Custom | FullCalendar UI and request form |
-| FullCalendar 6.1.15 | CDN | Reused | Calendar rendering and slot selection |
+| `api_exception_handler` | `reservations/api/exceptions.py` | Custom (on DRF) | Database outage → 503 JSON; other unexpected errors → generic 500 JSON; details logged only |
+| `DatabaseUnavailableMiddleware` | `govfleet/middleware.py` | Custom | Database outage on HTML pages (calendar, login, admin) → friendly 503 page |
+| Health probe | `govfleet/health.py` | Custom | `GET /health/` → 200 / 503 based on a `SELECT 1` |
+| FullCalendar 6.1.15 | `static/reservations/vendor/fullcalendar-6.1.15/` | Reused | Calendar rendering and slot selection (vendored, integrity-verified npm bundle) |
 | Django REST Framework 3.16.1 | pip | Reused | API framework |
 | Django admin | built-in | Reused | Vehicle and reservation management (interim) |
 
@@ -160,7 +165,7 @@ Composite `(vehicle, start_time, end_time)`, plus `start_time`, `end_time`, and 
 
 **Design decision — Pending blocks the slot.** A pending request reserves the slot until a scheduler approves or rejects it. This prevents two users from both submitting requests for the same slot and leaving the scheduler to resolve the clash. Rejected, cancelled, and completed reservations free the slot.
 
-The calendar UI mirrors the 6-month horizon by disabling dates beyond it; the server remains the authority.
+The calendar UI mirrors the 6-month horizon by disabling times beyond it. The limit is passed from `VehicleReservationService.MAX_ADVANCE` to the page, so the UI and the rule cannot drift apart. The server remains the authority.
 
 ---
 
@@ -187,7 +192,14 @@ Even if a future code path bypasses the service, PostgreSQL rejects any overlapp
 
 ## 8. API contract
 
-All endpoints require authentication. Unauthenticated requests receive **401**.
+All `/api/` endpoints require authentication. Unauthenticated requests receive **401**. Timestamps in responses are local time (`+08:00`).
+
+Every endpoint may also return:
+
+| Status | Body | When |
+|---|---|---|
+| 503 Service Unavailable | `{"detail": "...", "code": "service_unavailable"}` + `Retry-After: 30` | Database unreachable |
+| 500 Internal Server Error | `{"detail": "An unexpected error occurred.", "code": "server_error"}` | Unexpected bug (details only in server log) |
 
 ### `GET /api/vehicles/`
 Active vehicles for selection.
@@ -218,9 +230,13 @@ Request:
 | 400 Bad Request | Field errors, e.g. `{"end_time": ["End time must be after start time."]}` |
 | 401 Unauthorized | Not logged in |
 | 409 Conflict | `{"detail": "...", "code": "vehicle_unavailable", "conflicts": [{"start_time", "end_time", "status"}]}` |
+| 429 Too Many Requests | Per-user limit exceeded (default 30/hour, `THROTTLE_RESERVATION_CREATE`); includes `Retry-After` |
 
 ### `GET /api/calendar/events/?start=<ISO>&end=<ISO>[&vehicle=<id>]`
-Returns a FullCalendar event array of slot-occupying reservations. The window is limited to 62 days.
+Returns a FullCalendar event array of slot-occupying reservations, with `start`/`end` in local time (`+08:00`). The window is limited to 62 days.
+
+### `GET /health/`
+No authentication required. Returns `{"status": "ok", "database": "ok"}` (200) or `{"status": "unavailable", "database": "unavailable"}` (503). Never includes error details.
 
 ---
 
@@ -234,8 +250,11 @@ Returns a FullCalendar event array of slot-occupying reservations. The window is
 | Privacy of other users | Conflict responses and calendar events of other users show only time and status, never requester identity or trip purpose. Users see their own purpose |
 | CSRF | Django CSRF protection on all state-changing requests; JS sends `X-CSRFToken` |
 | XSS | Server data is inserted with `textContent`, never `innerHTML` |
-| Error leakage | DRF returns structured errors; no stack traces in responses when `DEBUG=False` |
-| Transport (production) | With `DEBUG=False`: secure cookies, HTTPS redirect, HSTS |
+| Error leakage | Custom DRF exception handler and middleware: all errors are structured JSON or a plain 503 page, never stack traces, even with `DEBUG=True`; details go to the server log |
+| Availability | `connect_timeout=5` s, `CONN_HEALTH_CHECKS`, `DB_HOST=127.0.0.1`: a database outage fails fast instead of hanging requests |
+| Abuse / flooding | Reservation creation rate-limited per user (429) |
+| Transport (production) | With `DEBUG=False`: secure cookies, HTTPS redirect, HSTS (incl. subdomains, preload); `check --deploy` clean |
+| Third-party scripts | FullCalendar served from the app's own static files (no CDN), integrity-verified against the npm registry |
 | Input bounds | Purpose length, reservation duration, booking horizon, and calendar window are all capped |
 | Dependencies | Exact versions pinned in `requirements.txt` (Worksheet D mitigation) |
 
@@ -245,12 +264,13 @@ Returns a FullCalendar event array of slot-occupying reservations. The window is
 
 **Framework:** pytest 8.4.2 + pytest-django 4.11.1, against a real PostgreSQL 17 test database (required, since the constraints are PostgreSQL-specific).
 
-**Result:** **43 passed**, 0 failed (≈22 s).
+**Result:** **59 passed**, 0 failed (≈27 s). The suite also runs on GitHub Actions (PostgreSQL 17 service container) for every push and pull request to `main`.
 
 | Suite | Tests | Covers |
 |---|---|---|
 | `test_reservation_service.py` | 21 | Creation as Pending; five overlap shapes (inside, overlapping start, overlapping end, covering, identical); back-to-back allowed; same slot on another vehicle allowed; rejected/cancelled/completed free the slot; end-before-start; past start; >7 days; >6 months ahead; ≤6 months allowed; inactive vehicle; blank purpose; DB exclusion constraint without service; DB check constraint; availability check |
-| `test_api.py` | 21 | 401 on all endpoints; 201 create; 409 with no leaked details; 400 for each missing field, inverted range, unknown vehicle, malformed timestamp, inactive vehicle; availability endpoint and 404; inactive vehicles hidden from list; calendar hides others' purpose and shows own; calendar requires range; page requires login and renders |
+| `test_api.py` | 26 | 401 on all endpoints; 201 create; 409 with no leaked details; 400 for each missing field, inverted range, unknown vehicle, malformed timestamp, inactive vehicle; availability endpoint and 404; inactive vehicles hidden from list; calendar hides others' purpose and shows own; calendar requires range; calendar feed in `+08:00`; per-user throttling (429) and read endpoints not throttled; page requires login and renders; page receives the server booking horizon; FullCalendar served locally |
+| `test_resilience.py` | 11 | Database outage → 503 JSON on write and read endpoints, with `Retry-After` and no leaked internals; outage is logged; unexpected error → generic 500 JSON; outage on HTML page → friendly 503 page; non-database errors not swallowed; `/health/` ok without login, 503 when database unreachable, rejects POST; fail-fast connection settings |
 | `test_concurrency.py` | 1 | 8 simultaneous requests → exactly 1 booking |
 
 Run with:
@@ -286,8 +306,9 @@ Run with:
 2. **Six months = 183 days**, a fixed duration rather than calendar months, to avoid an extra dependency.
 3. **No cancellation or editing** by the requester yet.
 4. **Vehicle management** is via the Django admin until a dedicated Admin UI exists.
-5. **FullCalendar loads from a CDN** (jsDelivr); an offline/air-gapped deployment would need it served locally.
-6. **Time zone** is `Asia/Manila`; timestamps are stored in UTC and must include an offset in API calls.
+5. ~~FullCalendar loads from a CDN~~ — resolved: now served locally.
+6. **Time zone** is `Asia/Manila`; timestamps are stored in UTC, returned in `+08:00`, and must include an offset in API calls.
+7. **Throttle counters are per process** (Django's local-memory cache). With several server processes the effective limit is multiplied; move the cache to Redis when it is introduced in Phase 4.
 
 ---
 
@@ -315,3 +336,20 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup_db.ps1
 .\.venv\Scripts\python.exe manage.py createsuperuser
 .\.venv\Scripts\python.exe manage.py runserver
 ```
+
+---
+
+## 15. Post-LA3 polish (`fix/f01-polish`)
+
+| Item | Change | Verified by |
+|---|---|---|
+| A1 | DRF exception handler + middleware: DB outage → 503 (JSON for API, page for HTML), logged; UI shows "temporarily unavailable" | `test_resilience.py`; TC-05 re-run (see LA3 summary) |
+| A2 | `connect_timeout=5`, `CONN_HEALTH_CHECKS=True`, default `DB_HOST=127.0.0.1` | TC-05 re-run: ≈2 s instead of 41 s |
+| A3 | `GET /health/` database probe | `test_resilience.py`; manual probe during outage → 503 |
+| B4 | Calendar feed returns `+08:00` like the reservation API | `test_calendar_events_use_local_time_like_reservation_api` |
+| B5 | Calendar horizon taken from `MAX_ADVANCE` (was a hard-coded 184 days vs. the server's 183) | `test_calendar_page_uses_server_booking_horizon` |
+| C6 | `SECURE_HSTS_PRELOAD=True` | `manage.py check --deploy` → no issues |
+| C7 | FullCalendar 6.1.15 vendored (npm tarball, sha512 verified) | `test_calendar_page_serves_fullcalendar_locally` |
+| C8 | Per-user throttle on `POST /api/reservations/` (429) | `test_reservation_create_is_throttled_per_user` |
+| D9 | GitHub Actions CI: checks, missing-migration check, `check --deploy`, pytest on PostgreSQL 17 | Workflow run on the PR |
+| E11 | README, this report, [LA3 summary](LA3-summary.md) | — |

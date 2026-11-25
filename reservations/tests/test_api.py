@@ -1,10 +1,13 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
+from django.contrib.staticfiles import finders
 from django.urls import reverse
 from rest_framework.test import APIClient
+from rest_framework.throttling import ScopedRateThrottle
 
 from reservations.models import Reservation
+from reservations.services import VehicleReservationService
 
 pytestmark = pytest.mark.django_db
 
@@ -153,6 +156,41 @@ def test_calendar_events_requires_range(api_client):
     assert api_client.get(EVENTS_URL).status_code == 400
 
 
+def test_calendar_events_use_local_time_like_reservation_api(api_client, vehicle, slot):
+    created = api_client.post(CREATE_URL, payload(vehicle, *slot), format="json").data
+    params = {"start": (slot[0] - timedelta(days=1)).isoformat(), "end": (slot[1] + timedelta(days=1)).isoformat()}
+    event = api_client.get(EVENTS_URL, params).data[0]
+
+    assert event["start"].endswith("+08:00") and event["end"].endswith("+08:00")
+    assert datetime.fromisoformat(event["start"]) == slot[0]
+    # Same offset as the reservation API's own timestamps.
+    assert created["start_time"].endswith("+08:00")
+
+
+# --- throttling -----------------------------------------------------------------
+
+def test_reservation_create_is_throttled_per_user(api_client, client_for, other_user, vehicle, slot, monkeypatch):
+    monkeypatch.setattr(ScopedRateThrottle, "THROTTLE_RATES", {"reservation_create": "2/min"})
+    start, end = slot
+
+    assert api_client.post(CREATE_URL, payload(vehicle, start, end), format="json").status_code == 201
+    assert api_client.post(CREATE_URL, payload(vehicle, start, end), format="json").status_code == 409
+    third = api_client.post(CREATE_URL, payload(vehicle, start, end), format="json")
+    assert third.status_code == 429
+    assert "Retry-After" in third
+
+    # Another user has their own budget.
+    later = start + timedelta(days=1)
+    response = client_for(other_user).post(CREATE_URL, payload(vehicle, later, later + timedelta(hours=1)), format="json")
+    assert response.status_code == 201
+
+
+def test_read_endpoints_are_not_throttled(api_client, monkeypatch):
+    monkeypatch.setattr(ScopedRateThrottle, "THROTTLE_RATES", {"reservation_create": "1/min"})
+    for _ in range(3):
+        assert api_client.get(reverse("api:vehicle-list")).status_code == 200
+
+
 # --- page -----------------------------------------------------------------------
 
 def test_calendar_page_requires_login(client):
@@ -166,3 +204,19 @@ def test_calendar_page_renders_for_logged_in_user(client, user):
     response = client.get(reverse("reservations:calendar"))
     assert response.status_code == 200
     assert b"fullcalendar" in response.content
+
+
+def test_calendar_page_uses_server_booking_horizon(client, user):
+    client.force_login(user)
+    response = client.get(reverse("reservations:calendar"))
+    expected = int(VehicleReservationService.MAX_ADVANCE.total_seconds())
+    assert f'data-max-advance-seconds="{expected}"'.encode() in response.content
+
+
+def test_calendar_page_serves_fullcalendar_locally(client, user):
+    client.force_login(user)
+    content = client.get(reverse("reservations:calendar")).content.decode()
+    assert "cdn.jsdelivr.net" not in content
+    path = "reservations/vendor/fullcalendar-6.1.15/index.global.min.js"
+    assert path in content
+    assert finders.find(path), "vendored FullCalendar bundle is missing"
