@@ -13,4 +13,6 @@ urlpatterns = [
     ),
     path("reservations/", views.ReservationCreateView.as_view(), name="reservation-create"),
     path("calendar/events/", views.CalendarEventsView.as_view(), name="calendar-events"),
+    path("availability/", views.DailyAvailabilityView.as_view(), name="daily-availability"),
+    path("availability/day/", views.DayAvailabilityView.as_view(), name="day-availability"),
 ]

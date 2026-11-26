@@ -19,12 +19,46 @@ def _clear_cache():
 
 @pytest.fixture
 def user(db):
-    return get_user_model().objects.create_user(username="juan", password="s3cure-pass-123")
+    email = "juandelacruz@dict.gov.ph"
+    return get_user_model().objects.create_user(username=email, email=email)
 
 
 @pytest.fixture
 def other_user(db):
-    return get_user_model().objects.create_user(username="maria", password="s3cure-pass-456")
+    email = "mariaclara@dost.gov.ph"
+    return get_user_model().objects.create_user(username=email, email=email)
+
+
+@pytest.fixture
+def make_account(db):
+    """Create a local user with a given RBAC role (no Firebase involved)."""
+    from accounts.models import ApprovedAdmin, Role
+
+    def make(email, role=Role.USER):
+        u = get_user_model().objects.create_user(username=email, email=email)
+        u.profile.role = role
+        u.profile.save()
+        if role == Role.ADMIN:
+            ApprovedAdmin.objects.get_or_create(email=email)
+            u.is_staff = u.is_superuser = True
+            u.save()
+        return u
+
+    return make
+
+
+@pytest.fixture
+def admin_user(make_account):
+    from accounts.models import Role
+
+    return make_account("govfleetadmin01@dict.gov.ph", Role.ADMIN)
+
+
+@pytest.fixture
+def scheduler_user(make_account):
+    from accounts.models import Role
+
+    return make_account("pedrosantos@dict.gov.ph", Role.SCHEDULER)
 
 
 @pytest.fixture

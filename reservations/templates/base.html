@@ -12,7 +12,9 @@
     <a class="brand" href="/">GovFleet</a>
     {% if user.is_authenticated %}
       <div class="user">
-        <span>{{ user.get_username }}</span>
+        <span>{{ user.email|default:user.get_username }}</span>
+        {% if user.profile %}<span class="role-badge role-{{ user.profile.role|lower }}">{{ user.profile.get_role_display }}</span>{% endif %}
+        {% if user.is_staff %}<a href="{% url 'admin:index' %}">Admin</a>{% endif %}
         <form method="post" action="{% url 'logout' %}">
           {% csrf_token %}
           <button type="submit" class="link-button">Log out</button>

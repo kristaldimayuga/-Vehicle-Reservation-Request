@@ -10,8 +10,13 @@
     events: app.dataset.eventsUrl,
     reservations: app.dataset.reservationsUrl,
     availability: (id) => app.dataset.availabilityUrlTemplate.replace("/0/", `/${encodeURIComponent(id)}/`),
+    dailyAvailability: app.dataset.dailyAvailabilityUrl,
+    dayAvailability: app.dataset.dayAvailabilityUrl,
     login: app.dataset.loginUrl,
   };
+  // Admin/Scheduler see everyone's reservations. Display only: the API
+  // enforces what each role may receive.
+  const seesAll = app.dataset.seesAll === "true";
   // Server booking horizon (VehicleReservationService.MAX_ADVANCE).
   const maxAdvanceMs = Number(app.dataset.maxAdvanceSeconds) * 1000;
 
@@ -173,6 +178,70 @@
     });
   }
 
+  // --- daily availability (counts only) --------------------------------------
+
+  const dayPanel = document.getElementById("day-availability");
+  const dayTitle = document.getElementById("day-availability-title");
+  const dayCount = document.getElementById("day-availability-count");
+  const dayList = document.getElementById("day-availability-list");
+
+  // Date -> "YYYY-MM-DD" in the browser's local time.
+  function toDateStr(date) {
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  }
+
+  function availabilityLevel(available, total) {
+    if (!total || available === 0) return "avail-none";
+    return available / total <= 0.34 ? "avail-low" : "avail-ok";
+  }
+
+  async function showDayAvailability(date) {
+    const dateStr = toDateStr(date);
+    dayTitle.textContent = date.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+    dayCount.textContent = "Checking…";
+    dayList.replaceChildren();
+    dayPanel.hidden = false;
+    try {
+      const { status, body } = await api(`${urls.dayAvailability}?${new URLSearchParams({ date: dateStr })}`);
+      if (status !== 200 || !body) throw new UserFacingError("Could not load availability for this day.");
+      if (!body.total) {
+        dayCount.textContent = "No vehicles are registered yet.";
+        return;
+      }
+      dayCount.textContent = `${body.available} of ${body.total} vehicle${body.total === 1 ? "" : "s"} available`;
+      dayCount.className = `count ${availabilityLevel(body.available, body.total)}`;
+      body.free_vehicles.forEach((v) => {
+        const li = document.createElement("li");
+        li.textContent = `${v.plate_number} — ${v.name}`;
+        dayList.appendChild(li);
+      });
+    } catch (err) {
+      dayPanel.hidden = true;
+      showRequestError(err);
+    }
+  }
+
+  // FullCalendar event source: one all-day "x/y free" marker per day.
+  async function availabilitySource(info, success, failure) {
+    const params = new URLSearchParams({ start: toDateStr(info.start), end: toDateStr(info.end) });
+    try {
+      const { status, body } = await api(`${urls.dailyAvailability}?${params}`);
+      if (status !== 200 || !Array.isArray(body)) return failure(new Error("Failed to load availability"));
+      success(body.map((d) => ({
+        id: `avail-${d.date}`,
+        title: d.total ? `${d.available}/${d.total} vehicles free` : "No vehicles",
+        start: d.date,
+        allDay: true,
+        display: "block",
+        classNames: ["availability", availabilityLevel(d.available, d.total)],
+        extendedProps: { kind: "availability" },
+      })));
+    } catch (err) {
+      failure(err);
+    }
+  }
+
   // --- calendar -------------------------------------------------------------
 
   const calendar = new FullCalendar.Calendar(document.getElementById("calendar"), {
@@ -182,7 +251,9 @@
     selectable: true,
     selectMirror: true,
     selectOverlap: true,
-    allDaySlot: false,
+    allDaySlot: true,  // holds the daily "x/y vehicles free" markers
+    allDayText: "Free",
+    eventOrder: "-allDay,start",
     height: "auto",
     // Mirrors the server rule exactly: a booking may start at most
     // MAX_ADVANCE from now. The limit comes from the server (data attribute).
@@ -190,23 +261,33 @@
       const today = new Date(new Date().setHours(0, 0, 0, 0));
       return { start: today, end: new Date(Date.now() + maxAdvanceMs) };
     },
-    events: async (info, success, failure) => {
-      const params = new URLSearchParams({ start: info.start.toISOString(), end: info.end.toISOString() });
-      if (vehicleFilter.value) params.set("vehicle", vehicleFilter.value);
-      try {
-        const { status, body } = await api(`${urls.events}?${params}`);
-        if (status === 200 && Array.isArray(body)) success(body);
-        else failure(new Error("Failed to load reservations"));
-      } catch (err) {
-        failure(err);
-      }
-    },
+    eventSources: [
+      // Reservations: Users get only their own; Admin/Scheduler get everyone's.
+      async (info, success, failure) => {
+        const params = new URLSearchParams({ start: info.start.toISOString(), end: info.end.toISOString() });
+        if (vehicleFilter.value) params.set("vehicle", vehicleFilter.value);
+        try {
+          const { status, body } = await api(`${urls.events}?${params}`);
+          if (status === 200 && Array.isArray(body)) success(body);
+          else failure(new Error("Failed to load reservations"));
+        } catch (err) {
+          failure(err);
+        }
+      },
+      availabilitySource,
+    ],
     eventSourceFailure: (err) => {
       if (err instanceof UserFacingError) showRequestError(err);
-      else if (!(err instanceof NotAuthenticatedError)) showResult("error", "Could not load reservations for this period.");
+      else if (!(err instanceof NotAuthenticatedError)) showResult("error", "Could not load the calendar for this period.");
     },
     select: (info) => {
       clearErrors();
+      showDayAvailability(info.start);
+      if (info.allDay) {
+        // A whole day was clicked (month view): only show its availability.
+        calendar.unselect();
+        return;
+      }
       startInput.value = dateToLocalInput(info.start);
       endInput.value = dateToLocalInput(info.end);
       if (vehicleFilter.value) vehicleSelect.value = vehicleFilter.value;
@@ -214,9 +295,14 @@
     },
     eventClick: (info) => {
       const p = info.event.extendedProps;
+      if (p.kind === "availability") {
+        showDayAvailability(info.event.start);
+        return;
+      }
       const items = [formatRange(info.event.start, info.event.end), `Status: ${p.status.toLowerCase()}`];
-      if (p.isOwn && p.purpose) items.push(`Purpose: ${p.purpose}`);
-      showResult(p.isOwn ? "ok" : "error", info.event.title, items);
+      if (p.requester && !p.isOwn) items.push(`Requested by: ${p.requester}`);
+      if (p.purpose) items.push(`Purpose: ${p.purpose}`);
+      showResult(p.isOwn || seesAll ? "ok" : "error", info.event.title, items);
     },
   });
 
