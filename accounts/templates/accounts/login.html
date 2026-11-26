@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Sign in · GovFleet{% endblock %}
+
+{% block head %}
+{# firebase-auth.js imports firebase-app.js by its CDN URL; map it to our vendored copy. #}
+<script type="importmap">
+{"imports": {"https://www.gstatic.com/firebasejs/13.2.0/firebase-app.js": "{% static 'reservations/vendor/firebase-13.2.0/firebase-app.js' %}"}}
+</script>
+{% endblock %}
+
+{% block content %}
+<section class="card narrow" id="auth"
+         data-session-url="{% url 'session-login' %}"
+         data-next="{{ next_url }}"
+         data-app-url="{% static 'reservations/vendor/firebase-13.2.0/firebase-app.js' %}"
+         data-auth-url="{% static 'reservations/vendor/firebase-13.2.0/firebase-auth.js' %}">
+  <h1>Sign in to GovFleet</h1>
+  <p class="hint">Use your agency email, e.g. <strong>juandelacruz@dict.gov.ph</strong>.</p>
+
+  {% if not firebase_configured %}
+    <p class="alert error">Sign-in is not configured on this server. Contact the system administrator.</p>
+  {% endif %}
+
+  <div class="auth-tabs" role="tablist">
+    <button type="button" role="tab" id="tab-signin" aria-selected="true" aria-controls="signin-form">Sign in</button>
+    <button type="button" role="tab" id="tab-signup" aria-selected="false" aria-controls="signup-form">Create account</button>
+  </div>
+
+  <form id="signin-form" novalidate>
+    <label for="signin-email">Email</label>
+    <input id="signin-email" type="email" autocomplete="username" required autofocus>
+    <label for="signin-password">Password</label>
+    <input id="signin-password" type="password" autocomplete="current-password" required>
+    <button type="submit" class="primary">Sign in</button>
+    <button type="button" id="forgot-password" class="link-button small-link">Forgot password?</button>
+  </form>
+
+  <form id="signup-form" novalidate hidden>
+    <label for="signup-email">Agency email</label>
+    <input id="signup-email" type="email" autocomplete="username" required>
+    <p class="format-hint">Format: firstnamelastname@agency.gov.ph (letters only before the @).</p>
+    <label for="signup-password">Password</label>
+    <input id="signup-password" type="password" autocomplete="new-password" minlength="8" required>
+    <label for="signup-confirm">Confirm password</label>
+    <input id="signup-confirm" type="password" autocomplete="new-password" minlength="8" required>
+    <button type="submit" class="primary">Create account</button>
+  </form>
+
+  <p class="divider">or</p>
+  <button type="button" id="google-signin" class="google-button">Continue with Google</button>
+
+  <div id="verify-panel" class="alert" hidden>
+    <strong>Verify your email</strong>
+    <p id="verify-text"></p>
+    <div class="actions">
+      <button type="button" id="verify-done" class="primary">I've verified, continue</button>
+      <button type="button" id="verify-resend">Resend link</button>
+    </div>
+  </div>
+
+  <div id="auth-result" class="alert" role="status" aria-live="polite" hidden></div>
+</section>
+{{ firebase_config|json_script:"firebase-config" }}
+{% endblock %}
+
+{% block scripts %}
+<script type="module" src="{% static 'accounts/login.js' %}"></script>
+{% endblock %}

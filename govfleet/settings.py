@@ -21,6 +21,15 @@ env = environ.Env(
     DB_PORT=(int, 5432),
     DB_CONNECT_TIMEOUT=(int, 5),
     THROTTLE_RESERVATION_CREATE=(str, "30/hour"),
+    THROTTLE_AUTH_SESSION=(str, "20/min"),
+    # Firebase. The service-account key is a SECRET: keep the file outside
+    # the repo and set only its path here.
+    FIREBASE_CREDENTIALS=(str, ""),
+    FIREBASE_PROJECT_ID=(str, ""),
+    # Web app config: public by design (shipped to every browser).
+    FIREBASE_API_KEY=(str, ""),
+    FIREBASE_AUTH_DOMAIN=(str, ""),
+    FIREBASE_APP_ID=(str, ""),
 )
 environ.Env.read_env(BASE_DIR / ".env")
 
@@ -54,6 +63,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "django.contrib.postgres",
     "rest_framework",
+    "accounts",
     "reservations",
 ]
 
@@ -63,6 +73,9 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # Verifies "Authorization: Bearer <Firebase ID token>" and maps the UID
+    # to the local user + role (overrides the session user for that request).
+    "accounts.middleware.FirebaseAuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     # Last, so its process_exception runs first: DB outage -> clean 503.
@@ -108,13 +121,27 @@ DATABASES = {
     }
 }
 
-# --- Authentication ----------------------------------------------------------
-# Temporary: Django session login. Will be replaced by Firebase JWT
-# middleware in a later phase without touching the service layer.
+# --- Authentication (Firebase) -----------------------------------------------
+# Firebase holds the credentials. The browser signs in with the Firebase JS
+# SDK; Django verifies the ID token with firebase-admin, either per request
+# (Bearer, accounts.middleware) or once to start a session
+# (accounts.views.SessionLoginView). Local users carry the RBAC role.
+
+FIREBASE_CREDENTIALS = env("FIREBASE_CREDENTIALS")
+FIREBASE_PROJECT_ID = env("FIREBASE_PROJECT_ID")
+FIREBASE_WEB_CONFIG = {
+    "apiKey": env("FIREBASE_API_KEY"),
+    "authDomain": env("FIREBASE_AUTH_DOMAIN"),
+    "projectId": env("FIREBASE_PROJECT_ID"),
+    "appId": env("FIREBASE_APP_ID"),
+}
 
 LOGIN_URL = "login"
 LOGIN_REDIRECT_URL = "reservations:calendar"
 LOGOUT_REDIRECT_URL = "login"
+
+# A session outlives the 1-hour Firebase ID token, so keep it to a work day.
+SESSION_COOKIE_AGE = 8 * 60 * 60
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -127,6 +154,8 @@ AUTH_PASSWORD_VALIDATORS = [
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        # First, so unauthenticated requests get 401 + WWW-Authenticate.
+        "accounts.authentication.FirebaseAuthentication",
         "reservations.api.authentication.SessionAuthentication401",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
@@ -140,6 +169,7 @@ REST_FRAMEWORK = {
     # Counters live in the default cache (per process); move to Redis later.
     "DEFAULT_THROTTLE_RATES": {
         "reservation_create": env("THROTTLE_RESERVATION_CREATE"),
+        "auth_session": env("THROTTLE_AUTH_SESSION"),
     },
 }
 

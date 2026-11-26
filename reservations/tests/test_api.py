@@ -49,7 +49,7 @@ def test_create_returns_201_pending(api_client, user, vehicle, slot):
     assert Reservation.objects.get().requester == user
 
 
-def test_overlap_returns_409_without_leaking_details(api_client, client_for, other_user, vehicle, slot):
+def test_overlap_returns_409_without_schedule_details_for_users(api_client, client_for, other_user, vehicle, slot):
     api_client.post(CREATE_URL, payload(vehicle, *slot, purpose="Confidential"), format="json")
     start, end = slot
     response = client_for(other_user).post(
@@ -57,9 +57,18 @@ def test_overlap_returns_409_without_leaking_details(api_client, client_for, oth
     )
     assert response.status_code == 409
     assert response.data["code"] == "vehicle_unavailable"
+    # Users must not learn other people's booking times.
+    assert "conflicts" not in response.data
+    assert "Confidential" not in response.content.decode()
+
+
+@pytest.mark.parametrize("staff", ["admin_user", "scheduler_user"])
+def test_overlap_409_shows_conflict_times_to_staff(request, api_client, client_for, vehicle, slot, staff):
+    api_client.post(CREATE_URL, payload(vehicle, *slot, purpose="Confidential"), format="json")
+    response = client_for(request.getfixturevalue(staff)).post(CREATE_URL, payload(vehicle, *slot), format="json")
+    assert response.status_code == 409
     assert len(response.data["conflicts"]) == 1
-    assert "purpose" not in response.data["conflicts"][0]
-    assert "requester" not in response.data["conflicts"][0]
+    assert set(response.data["conflicts"][0]) == {"start_time", "end_time", "status"}
 
 
 @pytest.mark.parametrize("missing", ["vehicle", "start_time", "end_time", "purpose"])
@@ -130,19 +139,32 @@ def test_vehicle_list_excludes_inactive(api_client, vehicle):
     assert [v["plate_number"] for v in response.data] == [vehicle.plate_number]
 
 
-def test_calendar_events_hide_other_users_purpose(api_client, client_for, other_user, vehicle, slot):
+def window(slot):
+    return {"start": (slot[0] - timedelta(days=1)).isoformat(), "end": (slot[1] + timedelta(days=1)).isoformat()}
+
+
+def test_calendar_events_users_see_only_their_own(api_client, client_for, other_user, vehicle, slot):
     client_for(other_user).post(CREATE_URL, payload(vehicle, *slot, purpose="Secret trip"), format="json")
-    params = {
-        "start": (slot[0] - timedelta(days=1)).isoformat(),
-        "end": (slot[1] + timedelta(days=1)).isoformat(),
-    }
-    response = api_client.get(EVENTS_URL, params)
+    later = slot[0] + timedelta(days=1)
+    api_client.post(CREATE_URL, payload(vehicle, later, later + timedelta(hours=1), purpose="Mine"), format="json")
+
+    response = api_client.get(EVENTS_URL, {"start": window(slot)["start"], "end": (later + timedelta(days=1)).isoformat()})
     assert response.status_code == 200
     assert len(response.data) == 1
-    event = response.data[0]
+    assert response.data[0]["extendedProps"]["isOwn"] is True
+    assert "Secret" not in response.content.decode()
+    assert other_user.username not in response.content.decode()
+
+
+@pytest.mark.parametrize("staff", ["admin_user", "scheduler_user"])
+def test_calendar_events_staff_see_everyone_with_details(request, client_for, user, other_user, vehicle, slot, staff):
+    client_for(other_user).post(CREATE_URL, payload(vehicle, *slot, purpose="Secret trip"), format="json")
+    response = client_for(request.getfixturevalue(staff)).get(EVENTS_URL, window(slot))
+    assert response.status_code == 200
+    (event,) = response.data
     assert event["extendedProps"]["isOwn"] is False
-    assert "purpose" not in event["extendedProps"]
-    assert "Secret" not in event["title"]
+    assert event["extendedProps"]["purpose"] == "Secret trip"
+    assert event["extendedProps"]["requester"] == other_user.email
 
 
 def test_calendar_events_show_own_purpose(api_client, vehicle, slot):

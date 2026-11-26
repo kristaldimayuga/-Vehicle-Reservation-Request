@@ -10,11 +10,20 @@
      data-reservations-url="{% url 'api:reservation-create' %}"
      data-availability-url-template="{% url 'api:vehicle-availability' 0 %}"
      data-login-url="{% url 'login' %}"
+     data-daily-availability-url="{% url 'api:daily-availability' %}"
+     data-day-availability-url="{% url 'api:day-availability' %}"
+     data-sees-all="{{ sees_all|yesno:'true,false' }}"
      data-max-advance-seconds="{{ max_advance_seconds }}">
 
   <aside class="card">
     <h1>Vehicle Reservation Request</h1>
-    <p class="hint">Drag across the calendar to pick a time slot, or enter it below.</p>
+    <p class="hint">Click a date to see how many vehicles are free, then drag across the calendar to pick a time slot, or enter it below.</p>
+
+    <section id="day-availability" class="day-availability" aria-live="polite" hidden>
+      <h2 id="day-availability-title"></h2>
+      <p id="day-availability-count" class="count"></p>
+      <ul id="day-availability-list"></ul>
+    </section>
 
     <form id="reservation-form" novalidate>
       <label for="vehicle">Vehicle</label>
@@ -46,6 +55,7 @@
 
   <section class="card calendar-card">
     <div class="calendar-toolbar">
+      <span class="scope-note">{% if sees_all %}Showing everyone's reservations.{% else %}Showing your reservations and the number of free vehicles per day.{% endif %}</span>
       <label for="vehicle-filter">Show reservations for</label>
       <select id="vehicle-filter">
         <option value="">All vehicles</option>

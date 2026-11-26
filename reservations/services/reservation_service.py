@@ -8,7 +8,9 @@ Double-booking is prevented on two levels:
    overlap that slips past the application check.
 """
 
-from datetime import timedelta
+from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import date, datetime, time, timedelta
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -19,9 +21,31 @@ from .exceptions import ReservationValidationError, VehicleUnavailableError
 OVERLAP_CONSTRAINT = "reservation_no_overlap"
 
 
+@dataclass
+class DayAvailability:
+    """How many active vehicles are free on one local (Asia/Manila) day."""
+
+    day: date
+    vehicles: list  # all active vehicles
+    taken_ids: set = field(default_factory=set)
+
+    @property
+    def total(self):
+        return len(self.vehicles)
+
+    @property
+    def free_vehicles(self):
+        return [v for v in self.vehicles if v.pk not in self.taken_ids]
+
+    @property
+    def available(self):
+        return self.total - len(self.taken_ids)
+
+
 class VehicleReservationService:
     MAX_DURATION = timedelta(days=7)
     MAX_ADVANCE = timedelta(days=183)  # ~6 months
+    MAX_AVAILABILITY_DAYS = 62
 
     # --- Queries ------------------------------------------------------------
 
@@ -46,16 +70,65 @@ class VehicleReservationService:
         return not conflicts, conflicts
 
     @staticmethod
-    def calendar_reservations(range_start, range_end, vehicle_id=None):
-        """Slot-occupying reservations visible in a calendar window."""
-        qs = Reservation.objects.select_related("vehicle").filter(
+    def calendar_reservations(range_start, range_end, vehicle_id=None, requester=None):
+        """Slot-occupying reservations visible in a calendar window.
+
+        `requester` limits the result to one user's own reservations (the
+        caller decides this from the viewer's role).
+        """
+        qs = Reservation.objects.select_related("vehicle", "requester").filter(
             status__in=Reservation.BLOCKING_STATUSES,
             start_time__lt=range_end,
             end_time__gt=range_start,
         )
         if vehicle_id is not None:
             qs = qs.filter(vehicle_id=vehicle_id)
+        if requester is not None:
+            qs = qs.filter(requester=requester)
         return qs
+
+    @classmethod
+    def daily_availability(cls, first_day, last_day):
+        """Free-vehicle count for each local day in [first_day, last_day].
+
+        A vehicle counts as taken for a day if any slot-occupying reservation
+        overlaps that day (00:00-24:00 local time). Only counts are exposed,
+        never who booked or when.
+        """
+        if last_day < first_day:
+            raise ReservationValidationError("End date must not be before start date.", field="end")
+        if (last_day - first_day).days + 1 > cls.MAX_AVAILABILITY_DAYS:
+            raise ReservationValidationError(
+                f"Availability can be requested for at most {cls.MAX_AVAILABILITY_DAYS} days.", field="end"
+            )
+
+        tz = timezone.get_current_timezone()
+        range_start = timezone.make_aware(datetime.combine(first_day, time.min), tz)
+        range_end = timezone.make_aware(datetime.combine(last_day + timedelta(days=1), time.min), tz)
+
+        vehicles = list(Vehicle.objects.filter(is_active=True).order_by("plate_number"))
+        taken = defaultdict(set)
+        rows = Reservation.objects.filter(
+            vehicle__is_active=True,
+            status__in=Reservation.BLOCKING_STATUSES,
+            start_time__lt=range_end,
+            end_time__gt=range_start,
+        ).values_list("vehicle_id", "start_time", "end_time")
+        for vehicle_id, start, end in rows:
+            # End is exclusive: a booking ending exactly at midnight does not
+            # occupy the next day.
+            day = max(timezone.localtime(start, tz).date(), first_day)
+            last = min(timezone.localtime(end - timedelta(microseconds=1), tz).date(), last_day)
+            while day <= last:
+                taken[day].add(vehicle_id)
+                day += timedelta(days=1)
+
+        days = []
+        day = first_day
+        while day <= last_day:
+            days.append(DayAvailability(day=day, vehicles=vehicles, taken_ids=taken.get(day, set())))
+            day += timedelta(days=1)
+        return days
 
     # --- Commands -----------------------------------------------------------
 

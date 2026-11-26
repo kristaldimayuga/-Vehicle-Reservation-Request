@@ -3,9 +3,10 @@ Django==5.2.8
 djangorestframework==3.16.1
 psycopg2-binary==2.9.11
 django-environ==0.12.0
+firebase-admin==7.8.0
 
 # Testing
 pytest==8.4.2
 pytest-django==4.11.1
 
-# Later phases (not yet installed): firebase-admin, celery, django-celery-beat, redis
+# Later phases (not yet installed): celery, django-celery-beat, redis
